@@ -5,13 +5,13 @@
 
 using namespace std;
 
+uniform_real_distribution<double> unif(0, 1);
+default_random_engine engine;
+
+double parallel_part_time = 0.0;
+
 double** generate_random_matrix(int n)
 {
-    double lower_bound = 0;
-    double upper_bound = 1;
-    uniform_real_distribution<double> unif(lower_bound, upper_bound);
-    default_random_engine engine;
-
     auto matrix = new double* [n];
 
     for (auto i = 0; i < n; i++)
@@ -83,6 +83,7 @@ double** lup_decomposition(double** A, int n, int t)
 
         if (row != i)
         {
+            auto start = omp_get_wtime();
             # pragma omp parallel for num_threads(t)
             for (auto q = 0; q < n; q++)
             {
@@ -93,8 +94,11 @@ double** lup_decomposition(double** A, int n, int t)
                 A[i][q] = A[row][q];
                 A[row][q] = tmp;
             }
+            auto elapsed = omp_get_wtime() - start;
+            parallel_part_time += elapsed;
         }
 
+        auto start = omp_get_wtime();
         # pragma omp parallel for num_threads(t)
         for (auto j = i + 1; j < n; j++)
         {
@@ -105,28 +109,18 @@ double** lup_decomposition(double** A, int n, int t)
                 A[j][k] -= A[j][i] * A[i][k];
             }
         }
+        auto elapsed = omp_get_wtime() - start;
+        parallel_part_time += elapsed;
     }
 
     return P;
 }
 
-//void print(double** matrix)
-//{
-//    int i = 0, j = 0;
-//    for (i = 0; i < n; i++)
-//    {
-//        for (j = 0; j < n; j++)
-//        {
-//            cout << matrix[i][j] << '\t';
-//        }
-//        cout << endl;
-//    }
-//}
-
 double** get_inverse(double** LU, double** P, int n, int t) {
     auto I = generate_zero_matrix(n);
     auto Y = generate_zero_matrix(n);
 
+    auto start = omp_get_wtime();
     # pragma omp parallel for num_threads(t)
     for (auto q = 0; q < n; q++) 
     {
@@ -151,22 +145,108 @@ double** get_inverse(double** LU, double** P, int n, int t) {
             I[i][q] = I[i][q] / LU[i][i];
         }
     }
+    auto elapsed = omp_get_wtime() - start;
+    parallel_part_time += elapsed;
 
     return I;
 }
 
+const int THREADS_NUM = 12;
+const int RUNS_NUM = 3;
+const int SEED = 73;
+const int N = 1000;
+const int MAX_N = 1000;
+const int N_STEP = 100;
+
 int main()
 {
-    auto n = 1000;
-    for (auto i = 1; i <= 12; i++)
+    auto steps = MAX_N / N_STEP;
+    auto results1 = new double[steps];
+
+    for (auto j = 0; j < steps; j++)
     {
-        cout << i << " threads\n";
-        auto A = generate_random_matrix(n);
-        auto start = chrono::steady_clock::now();
-        auto P = lup_decomposition(A, n, i);
-        auto I = get_inverse(A, P, n, i);
-        cout << "Elapsed(ms)=" << chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - start).count() << endl;
+        results1[j] = numeric_limits<double>::infinity();
     }
+
+    for (auto j = 0; j < RUNS_NUM; j++)
+    {
+        engine.seed(SEED);
+
+        for (auto i = 0; i < steps; i++)
+        {
+            auto n = (i + 1) * N_STEP;
+            cout << n << "x" << n << " matrix" << endl;
+            auto A = generate_random_matrix(n);
+            auto start = omp_get_wtime();
+            auto P = lup_decomposition(A, n, 1);
+            auto I = get_inverse(A, P, n, 1);
+            auto elapsed = omp_get_wtime() - start;
+            if (elapsed < results1[i])
+            {
+                results1[i] = elapsed;
+            }
+            cout << "Elapsed(ms)=" << elapsed << endl;
+        }
+
+        cout << "Round finished" << endl;
+    }
+
+    cout << "Summary: " << endl;
+
+    for (auto i = 0; i < steps; i++)
+    {
+        auto n = (i + 1) * N_STEP;
+        cout << n << "x" << n << " matrix : ";
+        cout << "Elapsed(ms)=" << results1[i] << endl;
+    }
+
+    auto results2 = new double[THREADS_NUM];
+    auto min_parallel_time = numeric_limits<double>::infinity();
+
+    for (auto j = 0; j < THREADS_NUM; j++)
+    {
+        results2[j] = numeric_limits<double>::infinity();
+        min_parallel_time = numeric_limits<double>::infinity();
+    }
+
+    for (auto j = 0; j < RUNS_NUM; j++)
+    {
+        for (auto i = 1; i <= THREADS_NUM; i++)
+        {
+            parallel_part_time = 0.0;
+            cout << i << " threads" << endl;
+            auto A = generate_random_matrix(N);
+            auto start = omp_get_wtime();
+            auto P = lup_decomposition(A, N, i);
+            auto I = get_inverse(A, P, N, i);
+            auto elapsed = omp_get_wtime() - start;  
+            if (elapsed < results2[i - 1])
+            {
+                results2[i - 1] = elapsed;
+            }
+            if (i == 1)
+            {
+                if (parallel_part_time < min_parallel_time)
+                {
+                    min_parallel_time = parallel_part_time;
+                }
+            }
+
+            cout << "Elapsed(ms)=" << elapsed << endl;
+        }
+
+        cout << "Round finished" << endl;
+    }
+
+    cout << "Summary: " << endl;
+
+    for (auto j = 0; j < THREADS_NUM; j++)
+    {
+        cout << j << " threads : ";
+        cout << "Elapsed(ms)=" << results2[j] << endl;
+    }
+
+    cout << "Parallel part time: " << min_parallel_time;
 
     return 0;
 }
