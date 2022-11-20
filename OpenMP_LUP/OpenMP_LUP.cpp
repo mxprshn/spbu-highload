@@ -178,8 +178,8 @@ int main()
             cout << n << "x" << n << " matrix" << endl;
             auto A = generate_random_matrix(n);
             auto start = omp_get_wtime();
-            auto P = lup_decomposition(A, n, 1);
-            auto I = get_inverse(A, P, n, 1);
+            auto P = lup_decomposition(A, n, THREADS_NUM);
+            auto I = get_inverse(A, P, n, THREADS_NUM);
             auto elapsed = omp_get_wtime() - start;
             if (elapsed < results1[i])
             {
