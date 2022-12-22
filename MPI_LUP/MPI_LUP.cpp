@@ -11,7 +11,8 @@ uniform_real_distribution<double> unif(0, 1);
 default_random_engine engine;
 
 const int ROOT_PROC_ID = 0;
-const int SEED = 73;
+
+double parallel_part_time = 0.0;
 
 int process_id = -1;
 bool is_root()
@@ -205,14 +206,30 @@ double** lup_decomposition(double** A, int n)
 
             pivot_time_sum += (MPI_Wtime() - pivot_start);
 
+            auto parallel_start = MPI_Wtime();
+
             for (auto j = 1; j < process_count; j++)
             {
                 MPI_Send(&A[i][i], n - i, MPI_DOUBLE, j, 1, MPI_COMM_WORLD);
             }
 
-            for (auto j = i + 1; j < n; j++)
+            auto chunk_count = (n - i - 1) / (process_count - 1);
+
+            MPI_Status status;
+            
+            for (auto j = 0; j <= chunk_count; j++)
             {
-                MPI_Send(&A[j][i], n - i, MPI_DOUBLE, j % (process_count - 1) + 1, j + 1, MPI_COMM_WORLD);
+                auto last_process = j == chunk_count ? (n - i - 1) % (process_count - 1) + 1 : process_count; 
+
+                for (auto k = 1; k < last_process; k++)
+                {
+                    MPI_Send(&A[i + j * (process_count - 1) + k][i], n - i, MPI_DOUBLE, k, i + 2, MPI_COMM_WORLD);
+                }
+
+                for (auto k = 1; k < last_process; k++)
+                {
+                    MPI_Recv(&A[i + j * (process_count - 1) + k][i], n - i, MPI_DOUBLE, k, i + 2, MPI_COMM_WORLD, &status);
+                }
             }
 
             for (auto j = 1; j < process_count; j++)
@@ -220,12 +237,7 @@ double** lup_decomposition(double** A, int n)
                 MPI_Send(nullptr, 0, MPI_DOUBLE, j, 0, MPI_COMM_WORLD);
             }
 
-            MPI_Status status;
-
-            for (auto j = i + 1; j < n; j++)
-            {                
-                MPI_Recv(&A[j][i], n - i, MPI_DOUBLE, j % (process_count - 1) + 1, j + 1, MPI_COMM_WORLD, &status);
-            }
+            parallel_part_time += (MPI_Wtime() - parallel_start);
         }
         else
         {
@@ -233,7 +245,7 @@ double** lup_decomposition(double** A, int n)
             auto row = new double[n - i];
 
             MPI_Status status;
-            MPI_Recv(primary_row, n - i, MPI_DOUBLE, ROOT_PROC_ID, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+            MPI_Recv(primary_row, n - i, MPI_DOUBLE, ROOT_PROC_ID, 1, MPI_COMM_WORLD, &status);
 
             if (status.MPI_TAG != 0)
             {
@@ -359,6 +371,7 @@ int main(int argc, char** argv)
     auto process_id = 0;
 
     auto n = stoi(argv[1]);
+    auto seed = stoi(argv[2]);
 
     MPI_Comm_size(MPI_COMM_WORLD, &process_count);
     MPI_Comm_rank(MPI_COMM_WORLD, &process_id);
@@ -369,7 +382,7 @@ int main(int argc, char** argv)
         cout << "n: " << n << endl;
     }
 
-    engine.seed(SEED);
+    engine.seed(seed);
 
     auto A = is_root() ? generate_random_matrix(n) : generate_zero_matrix(n);
     auto A_copy = is_root() ? copy_matrix(A, n) : nullptr;
@@ -390,12 +403,14 @@ int main(int argc, char** argv)
 
     auto time = is_root() ? MPI_Wtime() - start_time : 0;
     auto inv_time = is_root() ? MPI_Wtime() - inv_start : 0;
+    parallel_part_time += inv_time;
 
     if (is_root())
     {
         std::cout << "Elapsed: " << time << " s" << endl;
         std::cout << "Elapsed (inverse): " << inv_time << " s" << endl;
         std::cout << "Elapsed (exchange): " << exc_time << " s" << endl;
+        std::cout << "Parallel part time: " << parallel_part_time << " s" << endl;
         auto mult = multiply(A_copy, I, n);
         if (is_identity(mult, n))
         {
